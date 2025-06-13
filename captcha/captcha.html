@@ -1,52 +1,341 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html>
 <head>
-  <meta charset="utf-8">
-  <title>Joel</title>
+<meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CAPTCHA</title>
 
   <style type="text/css">
     html,
     body {
-      background: pink;
+      background: black;
       margin: 0;
       padding: 0;
       font-family: sans-serif;
+      overflow: hidden;
     }
 
     #captcha-container {
-      background: white;
+      background: black;
       width: 390px;
       height: 300px;
     }
 
-    /* Your style here... */
+    body {
+        margin:0;background:#111
+    }
+    
+    canvas {
+        display:block
+    }
   </style>
+
 </head>
-
 <body>
-  <div id="captcha-container">
-    <!-- Add your CAPTCHA here: -->
-    Hello world!
 
-    <!-- We've added a sample button. Feel free to remove it: -->
-    <button id="solve">
-      Solve!
-    </button>
+  <div id="captcha-container">
+    <div style="text-align: center; color: white;">Move your cursor to START</div>
+    <div style="text-align: center; color: white;">then keep it within the shaded line</div>
+    <div style="text-align: center; color: white;">and move it to END</div>
+    <canvas id="canvas"></canvas>
   </div>
 
-  <script type="text/javascript">
-    (function(window, document){
-      // This is how you tell the parent window that the CAPTCHA was successful.
-      function captchaSuccess() {
-        window.top.postMessage("success", '*');
-      }
+<script src="https://cdn.jsdelivr.net/gh/josephg/noisejs/perlin.js"></script>
 
-      // Your CAPTCHA code goes here, we've added a simple example below:
-      document.getElementById('solve')
-           .addEventListener('click', () => captchaSuccess());
+
+  <script type="text/javascript">
+    (function (window, document) {
+        // This is how you tell the parent window that the CAPTCHA was successful.
+        function captchaSuccess() {
+            window.top.postMessage("success", '*');
+        }
+
+        // Your CAPTCHA code goes here, we've added a simple example below:
+
+        // Constants
+        const LINE_COLOR = '#bbb';
+        const HOVER_LINE_COLOR = '#3f3';
+        const CIRCLE_COLOR = '#f55';
+        const CIRCLE_HOVER_COLOR = '#3f3';
+        const SEGMENTCOUNT = 1000;
+        const END_RADIUS = 30;
+        const MIN_DIST = 200;
+        const NOISE_SPEED = 0.015;
+        const AMPLITUDE = 80;
+        const WIDTH_MIN = 5;
+        const WIDTH_MAX = 25;
+        const NOISE_OFFSET_W = 0.05;
+        const PADDING_LENGTH = 30;
+
+        // — Rendering loop ruler —
+        let segments = []; // Filled each frame in animate()
+        let hoverStartCircle = null;
+        let hoverEndCircle = null;
+        let hoverCircle = null;
+        let hoverLine = null;
+        let hoverProgress = 0; // 0 to 1, highlight the segments by fraction
+        let noiseTime = 0;
+        noise.seed(Math.random());
+
+        // Setup
+        const canvas = document.getElementById('canvas'),
+        ctx = canvas.getContext('2d');
+
+        window.addEventListener('resize', resize);
+        resize();
+        let [startPt, endPt] = randomEndpoints();
+
+        // — Setup mouse tracking —
+        const mouse = {
+            x: 0,
+            y: 0
+        };
+
+        canvas.addEventListener('mousemove', mouseMoveHandler);
+        canvas.addEventListener('touchmove', touchMoveHandler);
+
+        animate();
+
+
+        function touchMoveHandler(e) {
+            const rect = canvas.getBoundingClientRect();
+            let touch = e.touches[0];
+            mouse.x = touch.clientX - rect.left;
+            mouse.y = touch.clientY - rect.top;
+            trackCursor(mouse);
+            e.preventDefault();
+        }
+
+        function mouseMoveHandler(e) {
+            const rect = canvas.getBoundingClientRect();
+            mouse.x = e.clientX - rect.left;
+            mouse.y = e.clientY - rect.top;
+            trackCursor(mouse);
+            e.preventDefault();
+        }
+
+        function trackCursor(mouse) {
+            const rect = canvas.getBoundingClientRect();
+
+            //on hover enter, light up the circle and set the progress to the minimum
+            hoverLine = false;
+
+            hoverStartCircle = isOverCircle(mouse, {
+                x: startPt.x,
+                y: startPt.y,
+                radius: END_RADIUS
+            });
+
+            hoverEndCircle = isOverCircle(mouse, {
+                x: endPt.x,
+                y: endPt.y,
+                radius: END_RADIUS
+            });
+
+            if (hoverProgress === 0 && hoverStartCircle) {
+                hoverProgress = 0.01;
+            }
+
+            if (hoverProgress > 0.91 && hoverEndCircle) {
+                hoverProgress = 1;
+                captchaSuccess();
+            }
+
+            //on hover continue, change the color of the hovered segments
+            for (let i = 0; i < segments.length; i++) {
+                const seg = segments[i];
+                if (isIntersection(mouse, seg.p1, seg.p2, seg.w2 / 2)) {
+                    hoverLine = true;
+
+                    const cursorProgressRatio = (i / SEGMENTCOUNT);
+                    const cursorProgressDiff = cursorProgressRatio - hoverProgress;
+
+                    if (cursorProgressDiff > 0 && cursorProgressDiff <= 0.1) {
+                        hoverProgress = i / SEGMENTCOUNT;
+                    }
+                    break;
+                }
+            }
+
+            //on hover out, revert to default colors and reset progress
+            if (!hoverStartCircle && !hoverEndCircle && !hoverLine) {
+                hoverProgress = 0;
+            }
+            
+            // Visual feedback
+            if (hoverEndCircle || hoverStartCircle) {
+                canvas.style.cursor = 'pointer';
+            } else if (hoverLine) {
+                canvas.style.cursor = 'crosshair';
+            } else {
+                canvas.style.cursor = 'default';
+            }
+
+        }
+
+        function resize() {
+            canvas.width = innerWidth;
+            canvas.height = innerHeight;
+        }
+
+        // Random endpoints with enforced distance
+        function randomEndpoints() {
+            const pad = END_RADIUS + PADDING_LENGTH;
+            let a,
+            b;
+            do {
+                a = {
+                    x: pad + Math.random() * (canvas.width - 2 * pad),
+                    y: pad + Math.random() * (canvas.height - 2 * pad)
+                };
+                b = {
+                    x: pad + Math.random() * (canvas.width - 2 * pad),
+                    y: pad + Math.random() * (canvas.height - 2 * pad)
+                };
+            } while (Math.hypot(b.x - a.x, b.y - a.y) < MIN_DIST);
+            return [a, b];
+        }
+
+
+        // Draw segment as filled quad
+        function drawSegment(x1, y1, x2, y2, w1, w2) {
+            const dx = x2 - x1,
+            dy = y2 - y1,
+            len = Math.hypot(dx, dy);
+            if (len < 0.0001)
+                return;
+            const ux = dx / len,
+            uy = dy / len,
+            nx = -uy,
+            ny = ux,
+            h1 = w1 / 2,
+            h2 = w2 / 2;
+            ctx.beginPath();
+            ctx.moveTo(x1 + nx * h1, y1 + ny * h1);
+            ctx.lineTo(x1 - nx * h1, y1 - ny * h1);
+            ctx.lineTo(x2 - nx * h2, y2 - ny * h2);
+            ctx.lineTo(x2 + nx * h2, y2 + ny * h2);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        // Draw stationary endpoint circle
+        function drawCircle(pt, color, text) {
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(pt.x, pt.y, END_RADIUS, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.font = '18px Arial';
+            ctx.textAlign = 'center'; // centers text horizontally on x
+            ctx.textBaseline = 'middle'; // centers text vertically on y
+            ctx.fillStyle = 'black'; // text color
+            ctx.fillText(text, pt.x, pt.y);
+        }
+
+        /**
+         * fade(t): for t ∈ [0,1]
+         * - near 0 or 1 → 0
+         * - in middle → random [0,1], consistent per call
+         */
+        function fade(t) {
+            // Clamp input to [0,1]
+            t = Math.max(0, Math.min(1, t));
+
+            // Apply smooth easing to ramp up from ends
+            const smooth = t * t * (3 - 2 * t);
+            // smooth = 0 at t=0, smooth=1 at t=1
+
+            // Weight for randomness: peaks in middle, zero at ends
+            const weight = Math.sin(Math.PI * t);
+
+            // Generate random per evaluation (seedless)
+            // const rnd = Math.random();
+
+            // Mix random value by weight² for sharper falloff near edges
+            return weight * weight
+            //* rnd
+        ;
+        }
+
+        // — Detection helpers —
+        function isOverCircle(mouse, circle) {
+            const dx = mouse.x - circle.x;
+            const dy = mouse.y - circle.y;
+            return Math.hypot(dx, dy) <= circle.radius;
+        }
+
+        function isIntersection(mouse, p1, p2, tol = 5) {
+            return mouse.x >= Math.min(p1.x, p2.x) - tol &&
+            mouse.x <= Math.max(p1.x, p2.x) + tol &&
+            mouse.y >= Math.min(p1.y, p2.y) - tol &&
+            mouse.y <= Math.max(p1.y, p2.y) + tol;
+        }
+
+        function animate() {
+            //segments = []; // Reset
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // --- Draw squiggle, collect segments ---
+            let prev = {
+                ...startPt
+            },
+            prevW = (WIDTH_MIN + WIDTH_MAX) / 2;
+            for (let i = 0; i <= SEGMENTCOUNT; i++) {
+                const t = i / SEGMENTCOUNT;
+                const fx = startPt.x + (endPt.x - startPt.x) * t;
+                const fy = startPt.y + (endPt.y - startPt.y) * t;
+                const f = fade(t);
+                const pos = t * 5 + noiseTime;
+                const x = fx + noise.perlin2(pos, noiseTime) * AMPLITUDE * f;
+                const y = fy + noise.perlin2(pos, noiseTime) * AMPLITUDE * f;
+                const w = WIDTH_MAX -
+                    ((noise.perlin2(pos + NOISE_OFFSET_W, noiseTime) + 1) / 2) *
+                    (WIDTH_MAX - WIDTH_MIN) *
+                    f;
+
+                segments[i] = {
+                    p1: prev,
+                    p2: {
+                        x,
+                        y
+                    },
+                    w1: prevW,
+                    w2: w
+                };
+                prev = {
+                    x: fx,
+                    y
+                };
+                prevW = w;
+            }
+
+            // --- Draw with hover styles ---
+            segments.forEach((s, i) => {
+                ctx.fillStyle = (i / SEGMENTCOUNT) <= hoverProgress
+                 ? HOVER_LINE_COLOR
+                 : LINE_COLOR;
+                drawSegment(s.p1.x, s.p1.y, s.p2.x, s.p2.y, s.w1, s.w2);
+            });
+
+            // End circles with hover styles
+            drawCircle(startPt, (hoverProgress > 0) ?
+                CIRCLE_HOVER_COLOR :
+                CIRCLE_COLOR, "START");
+
+            drawCircle(endPt, (hoverProgress > 0.97 && hoverEndCircle) ?
+                CIRCLE_HOVER_COLOR :
+                CIRCLE_COLOR,
+                "END");
+
+            noiseTime += NOISE_SPEED;
+            requestAnimationFrame(animate);
+        }
 
     })(window, document);
-  </script>
+</script>
 </body>
 </html>
+
+
